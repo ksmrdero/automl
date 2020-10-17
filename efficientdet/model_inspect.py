@@ -167,9 +167,22 @@ class ModelInspector(object):
     print('all_files=', all_files)
     num_batches = (len(all_files) + batch_size - 1) // batch_size
 
+    parent_dirname = os.path.dirname(image_path_pattern)
+    model = os.path.basename(os.path.normpath(parent_dirname))
+
+    output_folder = os.path.join(output_dir, model)
+
+    if not os.path.exists(output_folder):
+      os.mkdir(output_folder)
+    if not os.path.exists('logs'):
+      os.mkdir('logs')
+    log = open('logs/' + model + '.csv', 'w')
+    log.write('name,num_boxes,ymin,xmin,ymax,xmax,score,class\n')
+  
     for i in range(num_batches):
       batch_files = all_files[i * batch_size:(i + 1) * batch_size]
       height, width = self.model_config.image_size
+      
       images = [Image.open(f) for f in batch_files]
       if len(set([m.size for m in images])) > 1:
         # Resize only if images in the same batch have different sizes.
@@ -179,14 +192,42 @@ class ModelInspector(object):
       if size_before_pad < batch_size:
         padding_size = batch_size - size_before_pad
         raw_images += [np.zeros_like(raw_images[0])] * padding_size
-
+      print([all_files[i * batch_size + j].split('/')[-1] for j in range(size_before_pad)])
       detections_bs = driver.serve_images(raw_images)
       for j in range(size_before_pad):
+        img_id = i * batch_size + j
+        filename = all_files[img_id].split('/')[-1]
+        output_image_path = os.path.join(output_folder, filename)
+        # if os.path.exists(output_image_path):
+        #     continue
+        # print(detections_bs[j])
+        # detections_bs --> [image_id, ymin, xmin, ymax, xmax, score, class]
+        pts = self.convert_array(detections_bs[j])
+
         img = driver.visualize(raw_images[j], detections_bs[j], **kwargs)
-        img_id = str(i * batch_size + j)
-        output_image_path = os.path.join(output_dir, img_id + '.jpg')
+        
         Image.fromarray(img).save(output_image_path)
+        for pt in pts:
+          # print(pt)
+          # if (pts == pt).all(-1).sum() != 1:
+          #   continue
+          log.write('{},{},{},{},{},{},{},{}\n'.format(
+              filename, len(pts), pt[1], pt[2], pt[3], pt[4], pt[5], pt[6]))
+        if len(pts) == 0:
+          log.write('{},0,-1,-1,-1,-1,-1\n'.format(filename, 0))
         print('writing file to %s' % output_image_path)
+    log.close()
+
+  def convert_array(self, arr):
+    if len(arr) == 0:
+      return arr
+    to_remove = (arr[:, 1] == arr[:, 3]) | (arr[:, 2] == arr[:, 4])
+    res = np.delete(arr, np.where(to_remove), axis=0)
+    temp = []
+    for t in res:
+      if (res == t).all(-1).sum() == 1:
+        temp.append(t)
+    return temp
 
   def saved_model_benchmark(self,
                             image_path_pattern,
